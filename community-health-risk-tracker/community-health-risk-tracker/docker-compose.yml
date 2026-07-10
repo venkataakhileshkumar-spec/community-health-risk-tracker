@@ -1,0 +1,12 @@
+services:
+  community-health-risk-tracker:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - health_data:/app/data
+    environment:
+      - DATABASE_URL=sqlite:////app/data/community_health.db
+
+volumes:
+  health_data:

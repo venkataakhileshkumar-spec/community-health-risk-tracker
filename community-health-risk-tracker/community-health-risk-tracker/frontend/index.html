@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Community Health Risk Tracker</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.3/chart.umd.min.js"></script>
+<style>
+  :root {
+    --low: #2e8b57;
+    --moderate: #d9a441;
+    --high: #d9682e;
+    --critical: #b3261e;
+    --bg: #0f172a;
+    --panel: #ffffff;
+    --text: #1e293b;
+    --muted: #64748b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f1f5f9;
+    color: var(--text);
+  }
+  header {
+    background: var(--bg);
+    color: white;
+    padding: 20px 32px;
+  }
+  header h1 { margin: 0; font-size: 22px; }
+  header p { margin: 4px 0 0; color: #94a3b8; font-size: 14px; }
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 24px;
+    display: grid;
+    gap: 20px;
+  }
+  .panel {
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  .panel h2 { margin-top: 0; font-size: 16px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #e2e8f0; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+  .tier {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    color: white;
+  }
+  .tier-Low { background: var(--low); }
+  .tier-Moderate { background: var(--moderate); }
+  .tier-High { background: var(--high); }
+  .tier-Critical { background: var(--critical); }
+  .trend-worsening { color: var(--critical); font-weight: 600; }
+  .trend-improving { color: var(--low); font-weight: 600; }
+  .trend-stable { color: var(--muted); }
+  .score-bar-track { background: #e2e8f0; border-radius: 4px; height: 8px; width: 100px; overflow: hidden; }
+  .score-bar-fill { height: 100%; border-radius: 4px; }
+  .empty-state { color: var(--muted); font-size: 14px; padding: 12px 0; }
+  .factors { font-size: 13px; color: var(--muted); margin-top: 12px; }
+  .factors ul { margin: 6px 0 0; padding-left: 18px; }
+  select { padding: 6px 10px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Community Health Risk Tracker</h1>
+  <p>Composite population health risk scores across chronic disease burden, social determinants, healthcare access, and environmental exposure.</p>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>Risk Leaderboard</h2>
+    <div id="leaderboard-container">
+      <div class="empty-state">Loading...</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Community Detail</h2>
+    <select id="community-select"></select>
+    <div id="detail-container" style="margin-top: 16px;"></div>
+    <canvas id="subscoreChart" height="90"></canvas>
+    <div id="factors-container" class="factors"></div>
+  </section>
+</main>
+
+<script>
+const API = "/api";
+let chartInstance = null;
+
+function tierClass(tier) { return "tier tier-" + tier; }
+function tierColor(tier) {
+  return { Low: "#2e8b57", Moderate: "#d9a441", High: "#d9682e", Critical: "#b3261e" }[tier] || "#64748b";
+}
+
+async function loadLeaderboard() {
+  const res = await fetch(`${API}/risk/leaderboard`);
+  const data = await res.json();
+  const container = document.getElementById("leaderboard-container");
+  const select = document.getElementById("community-select");
+
+  if (!data.length) {
+    container.innerHTML = '<div class="empty-state">No communities yet. POST to /api/communities to add one.</div>';
+    return;
+  }
+
+  select.innerHTML = data.map(d => `<option value="${d.community_id}">${d.community_name}, ${d.state}</option>`).join("");
+
+  const rows = data.map(d => `
+    <tr>
+      <td>${d.community_name}, ${d.state}</td>
+      <td>${d.latest_period ?? "—"}</td>
+      <td>
+        ${d.latest_score != null ? `
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span>${d.latest_score.toFixed(1)}</span>
+            <div class="score-bar-track">
+              <div class="score-bar-fill" style="width:${d.latest_score}%; background:${tierColor(d.latest_tier)}"></div>
+            </div>
+          </div>` : "—"}
+      </td>
+      <td>${d.latest_tier ? `<span class="${tierClass(d.latest_tier)}">${d.latest_tier}</span>` : "—"}</td>
+      <td class="${d.trend ? 'trend-' + d.trend : ''}">${d.trend ?? "—"}</td>
+    </tr>
+  `).join("");
+
+  container.innerHTML = `
+    <table>
+      <thead><tr><th>Community</th><th>Latest Period</th><th>Score</th><th>Risk Tier</th><th>Trend</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+
+  if (data.length) loadDetail(select.value);
+}
+
+async function loadDetail(communityId) {
+  if (!communityId) return;
+  const detailContainer = document.getElementById("detail-container");
+  const factorsContainer = document.getElementById("factors-container");
+
+  try {
+    const res = await fetch(`${API}/risk/communities/${communityId}/latest`);
+    if (!res.ok) {
+      detailContainer.innerHTML = '<div class="empty-state">No risk score computed yet for this community.</div>';
+      factorsContainer.innerHTML = "";
+      if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+      return;
+    }
+    const d = await res.json();
+
+    detailContainer.innerHTML = `
+      <div style="display:flex; align-items:center; gap:16px;">
+        <div style="font-size:32px; font-weight:700;">${d.composite_score.toFixed(1)}</div>
+        <span class="${tierClass(d.risk_tier)}">${d.risk_tier} risk</span>
+        <span style="color:#64748b; font-size:13px;">as of ${d.reporting_period}</span>
+      </div>
+    `;
+
+    factorsContainer.innerHTML = d.contributing_factors.length
+      ? `<strong>Top contributing factors:</strong><ul>${d.contributing_factors.map(f => `<li>${f}</li>`).join("")}</ul>`
+      : `<em>No single factor dominates this score.</em>`;
+
+    const ctx = document.getElementById("subscoreChart").getContext("2d");
+    if (chartInstance) chartInstance.destroy();
+    chartInstance = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: ["Chronic Disease", "Social Determinants", "Healthcare Access", "Environmental"],
+        datasets: [{
+          label: "Subscore (0-100)",
+          data: [
+            d.chronic_disease_subscore,
+            d.social_determinants_subscore,
+            d.access_subscore,
+            d.environmental_subscore
+          ],
+          backgroundColor: ["#2563eb", "#7c3aed", "#0891b2", "#65a30d"]
+        }]
+      },
+      options: {
+        indexAxis: "y",
+        scales: { x: { min: 0, max: 100 } },
+        plugins: { legend: { display: false } }
+      }
+    });
+  } catch (e) {
+    detailContainer.innerHTML = '<div class="empty-state">Error loading detail.</div>';
+  }
+}
+
+document.getElementById("community-select").addEventListener("change", (e) => loadDetail(e.target.value));
+
+loadLeaderboard();
+</script>
+
+</body>
+</html>
